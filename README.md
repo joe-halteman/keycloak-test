@@ -46,5 +46,5 @@ curl -v -X GET http://127.0.0.1:{PORT}/{ROUTE} \
 # Docker
 ```
 $ docker build -t keycloak-test .
-$ docker run -d -p 8001:8001 keycloak-test
+$ docker run -d --rm -p 8001:8001 --name keycloak-test keycloak-test
 ```

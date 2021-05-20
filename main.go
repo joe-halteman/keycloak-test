@@ -9,13 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware"
-	"github.com/form3tech-oss/jwt-go"
+	"github.com/dgrijalva/jwt-go"
 
-	// "github.com/dgrijalva/jwt-go"
+	// "github.com/form3tech-oss/jwt-go"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi"
 	"github.com/go-chi/render"
@@ -207,8 +208,9 @@ func (s *server) JWTAuthentication001(next http.Handler) http.Handler {
 	return fn
 }
 
-// JWTAuthentication middleware
+// JWTAuthentication middleware from auth.go
 func (s *server) JWTAuthentication(next http.Handler) http.Handler {
+	log.Debug().Msg("JWTAuthentication - entering")
 	fn := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issuer := s.config.JWTIssuer
 
@@ -230,8 +232,9 @@ func (s *server) JWTAuthentication(next http.Handler) http.Handler {
 
 					r = setUser(token, r)
 
-					r = getRole(token, r)
-
+					// r = getRole(token, r)
+					r = getRoles(token, r)
+					r = getGroups(token, r)
 					result, _ := jwt.ParseRSAPublicKeyFromPEM([]byte(publicKey))
 
 					return result, nil
@@ -270,18 +273,91 @@ func getPemCert(token *jwt.Token) (string, error) {
 	return cert, nil
 }
 
+// setUser from auth.go
 func setUser(token *jwt.Token, r *http.Request) *http.Request {
+	log.Debug().Msg("setUser - entering")
 	claims := token.Claims.(jwt.MapClaims)
+	fmt.Printf("claims: %#v\n", claims)
 	ctx := context.WithValue(r.Context(), "user", claims["email"])
 	return r.WithContext(ctx)
 }
 
+// getRole from auth.go
 func getRole(token *jwt.Token, r *http.Request) *http.Request {
+	log.Debug().Msg("getRole - entering")
 	claims := token.Claims.(jwt.MapClaims)
 	ctx := context.WithValue(r.Context(), "role", claims["role"])
 	return r.WithContext(ctx)
 }
 
+// getRoles - new function for JWT roles
+func getRoles001(token *jwt.Token, r *http.Request) *http.Request {
+	log.Debug().Msg("getRoles - entering")
+	var roles []string
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		if resourceAccess, ok := claims["resource_access"]; ok {
+			if account, ok := resourceAccess.(map[string]interface{})["account"]; ok {
+				if iRoles, ok := account.(map[string]interface{})["roles"].([]interface{}); ok {
+					log.Printf("iRoles: %#v\n", iRoles)
+					for _, role := range iRoles {
+						if sRole, ok := role.(string); ok {
+							roles = append(roles, sRole)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	log.Printf("roles: %#v\n", roles)
+	ctx := context.WithValue(r.Context(), "roles", roles)
+	return r.WithContext(ctx)
+}
+
+// getRoles - new function for JWT roles
+func getRoles(token *jwt.Token, r *http.Request) *http.Request {
+	log.Debug().Msg("getRoles - entering")
+	var roles []string
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		if realmAccess, ok := claims["realm_access"]; ok {
+			if iRoles, ok := realmAccess.(map[string]interface{})["roles"].([]interface{}); ok {
+				log.Printf("iRoles: %#v\n", iRoles)
+				for _, role := range iRoles {
+					if sRole, ok := role.(string); ok {
+						roles = append(roles, sRole)
+					}
+				}
+			}
+		}
+	}
+
+	log.Printf("roles: %#v\n", roles)
+	ctx := context.WithValue(r.Context(), "roles", roles)
+	return r.WithContext(ctx)
+}
+
+func getGroups(token *jwt.Token, r *http.Request) *http.Request {
+	var groups []string
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		if iGroups, ok := claims["groups"].([]interface{}); ok {
+			log.Printf("iGroups: %#v\n", iGroups)
+			for _, group := range iGroups {
+				if sGroup, ok := group.(string); ok {
+					groups = append(groups, sGroup)
+				}
+			}
+		}
+	}
+
+	log.Printf("groups: %#v\n", groups)
+	ctx := context.WithValue(r.Context(), "groups", groups)
+	return r.WithContext(ctx)
+}
+
+// checkRole from serverImpl.go
 func checkRole(roleInfo interface{}) bool {
 	if roleInfo != nil {
 		roleClaim := roleInfo.([]interface{})
@@ -292,6 +368,31 @@ func checkRole(roleInfo interface{}) bool {
 		}
 	}
 	return false
+}
+
+// checkForRole - new function
+func checkForRole(roles []string, role string) bool {
+	for _, r := range roles {
+		if strings.EqualFold(r, role) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkForGroup - new function
+func checkForGroup(groups []string, group string) bool {
+	for _, g := range groups {
+		if strings.EqualFold(g, group) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkForAdminRole - new function
+func checkForAdminRole(roles []string) bool {
+	return checkForRole(roles, "admin")
 }
 func apiRouter(s *server) chi.Router {
 	// If you are service is behind load balancer like nginx, you might want to
@@ -334,9 +435,17 @@ func apiRouter(s *server) chi.Router {
 
 func (s *server) apidocs(w http.ResponseWriter, r *http.Request) {
 	ctx := setContext(w, r)
-	role := ctx.Value("role")
+	// role := ctx.Value("role")
 	issuer := s.config.JWTIssuer
-	isAdmin := checkRole(role)
+	// isAdmin := checkRole(role)
+	var (
+		roles []string
+		ok    bool
+	)
+	if roles, ok = ctx.Value("roles").([]string); !ok {
+		log.Error().Msg("apidocs - no roles")
+	}
+	isAdmin := checkForAdminRole(roles)
 
 	if issuer == "" || isAdmin {
 		html := `
@@ -380,7 +489,8 @@ func ping(w http.ResponseWriter, r *http.Request) {
 func setContext(w http.ResponseWriter, r *http.Request) context.Context {
 	ctx := context.WithValue(context.Background(), "requestID", w.Header().Get("Request-Id"))
 	ctx = context.WithValue(ctx, "user", r.Context().Value("user"))
-	ctx = context.WithValue(ctx, "role", r.Context().Value("role"))
+	// ctx = context.WithValue(ctx, "role", r.Context().Value("role"))
+	ctx = context.WithValue(ctx, "roles", r.Context().Value("roles"))
 
 	return ctx
 }
@@ -438,7 +548,8 @@ func NewServer(ctx context.Context, cfg *Cfg) (*server, error) {
 
 	// r.Handle("/metrics", promhttp.Handler())
 
-	r.Mount("/v1", apiRouter(s))
+	// r.Mount("/v1", apiRouter(s))
+	r.Use(s.JWTAuthentication)
 	r.HandleFunc("/", notFoundHandler)
 
 	// health check
